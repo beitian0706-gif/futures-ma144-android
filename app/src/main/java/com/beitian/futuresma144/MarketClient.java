@@ -87,7 +87,10 @@ public final class MarketClient {
     public static Signal latestCross(List<Bar> b, Contract c, int n, boolean closedOnly) {
         List<Bar> x=new ArrayList<>(b);
         if(closedOnly&&!x.isEmpty()&&x.get(x.size()-1).time().isAfter(LocalDateTime.now().minusMinutes(60))) x.remove(x.size()-1);
-        List<Signal> all=crosses(x,c,n,0); return all.isEmpty()?null:all.get(all.size()-1);
+        List<Signal> all=crosses(x,c,n,0);
+        if(all.isEmpty())return null;
+        Signal latest=all.get(all.size()-1);
+        return tradingDay(latest.time()).equals(currentTradingDay())?latest:null;
     }
 
     public static List<Signal> replay(List<Bar> b, Contract c, int n, int days) { return crosses(b,c,n,days); }
@@ -105,5 +108,13 @@ public final class MarketClient {
             if(dir!=null)out.add(new Signal(c.code(),c.name(),b.get(i).time(),dir,b.get(i).close(),ma[i]));
         } return out;
     }
+    // Chinese futures night sessions after 20:00 belong to the next trading day.
+    private static LocalDate tradingDay(LocalDateTime t){
+        LocalDate d=t.toLocalDate();
+        if(t.getHour()>=20)d=d.plusDays(1);
+        while(d.getDayOfWeek()==DayOfWeek.SATURDAY||d.getDayOfWeek()==DayOfWeek.SUNDAY)d=d.plusDays(1);
+        return d;
+    }
+    private static LocalDate currentTradingDay(){return tradingDay(LocalDateTime.now());}
     private static double parse(String s){try{return Double.parseDouble(s);}catch(Exception e){return 0;}}
 }
