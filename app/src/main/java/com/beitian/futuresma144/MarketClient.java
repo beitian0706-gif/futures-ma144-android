@@ -28,7 +28,9 @@ public final class MarketClient {
     public static List<Contract> mainContracts() throws Exception {
         String js=get("https://vip.stock.finance.sina.com.cn/quotes_service/view/js/qihuohangqing.js",Charset.forName("GBK"));
         // The catalogue contains [Chinese product name, Sina node]. Use each real product node once.
-        Pattern p=Pattern.compile("[\\[，,]\\s*['\\\"]([^'\\\"]{1,20})['\\\"]\\s*,\\s*['\\\"]([A-Za-z0-9_]+_qh)['\\\"]\\s*\\]");
+        // Catalogue rows contain at least three values: [name, node, column-count, ...].
+        // Match the first two values and deliberately do not require an immediate closing bracket.
+        Pattern p=Pattern.compile("\\[\\s*['\\\"]([^'\\\"]{1,30})['\\\"]\\s*,\\s*['\\\"]([A-Za-z0-9_]+_qh)['\\\"]");
         Matcher m=p.matcher(js); LinkedHashMap<String,String> nodes=new LinkedHashMap<>();
         while(m.find()) nodes.putIfAbsent(m.group(2),m.group(1));
         if(nodes.isEmpty()) throw new IOException("新浪品种目录解析失败");
