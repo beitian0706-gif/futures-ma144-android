@@ -67,9 +67,20 @@ public final class MarketClient {
         JSONArray a=new JSONArray(raw.substring(left+2,right)); List<Bar> out=new ArrayList<>();
         DateTimeFormatter f=DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
         for(int i=0;i<a.length();i++) {
-            JSONArray x=a.getJSONArray(i);
-            try { out.add(new Bar(LocalDateTime.parse(x.getString(0),f),parse(x.get(4).toString()))); } catch(Exception ignored) {}
+            try {
+                Object item=a.get(i);
+                String timeText, closeText;
+                if(item instanceof JSONObject) {
+                    JSONObject x=(JSONObject)item;
+                    timeText=x.getString("d"); closeText=x.get("c").toString();
+                } else {
+                    JSONArray x=(JSONArray)item;
+                    timeText=x.getString(0); closeText=x.get(4).toString();
+                }
+                out.add(new Bar(LocalDateTime.parse(timeText,f),parse(closeText)));
+            } catch(Exception ignored) {}
         }
+        if(out.isEmpty()) throw new IOException("K线数据为空或字段无法识别");
         out.sort(Comparator.comparing(Bar::time)); return out;
     }
 
