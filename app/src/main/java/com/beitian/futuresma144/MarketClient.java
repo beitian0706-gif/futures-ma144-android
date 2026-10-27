@@ -5,116 +5,97 @@ import org.json.JSONObject;
 import java.io.*;
 import java.net.*;
 import java.nio.charset.Charset;
-import java.time.*;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.regex.*;
 
 public final class MarketClient {
-    public record Contract(String code, String name, String root) {}
-    public record Bar(LocalDateTime time, double close) {}
-    public record Signal(String code, String name, LocalDateTime time, String direction, double close, double ma) {}
+    private MarketClient() {}
 
     private static String get(String address, Charset charset) throws Exception {
-        HttpURLConnection c=(HttpURLConnection)new URL(address).openConnection();
-        c.setConnectTimeout(12000); c.setReadTimeout(20000);
-        c.setRequestProperty("User-Agent","Mozilla/5.0 (Android) AppleWebKit/537.36 Chrome/120 Safari/537.36");
-        c.setRequestProperty("Referer","https://vip.stock.finance.sina.com.cn/");
-        try(InputStream in=c.getInputStream(); ByteArrayOutputStream out=new ByteArrayOutputStream()) {
-            in.transferTo(out); return out.toString(charset);
-        } finally { c.disconnect(); }
+        HttpURLConnection connection = (HttpURLConnection) new URL(address).openConnection();
+        connection.setConnectTimeout(12000);
+        connection.setReadTimeout(20000);
+        connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Android) AppleWebKit/537.36 Chrome/120 Safari/537.36");
+        connection.setRequestProperty("Referer", "https://vip.stock.finance.sina.com.cn/");
+        try (InputStream in = connection.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
+            return new String(out.toByteArray(), charset);
+        } finally {
+            connection.disconnect();
+        }
     }
 
-    public static List<Contract> mainContracts() throws Exception {
-        String js=get("https://vip.stock.finance.sina.com.cn/quotes_service/view/js/qihuohangqing.js",Charset.forName("GBK"));
-        // The catalogue contains [Chinese product name, Sina node]. Use each real product node once.
-        // Catalogue rows contain at least three values: [name, node, column-count, ...].
-        // Match the first two values and deliberately do not require an immediate closing bracket.
-        Pattern p=Pattern.compile("\\[\\s*['\\\"]([^'\\\"]{1,30})['\\\"]\\s*,\\s*['\\\"]([A-Za-z0-9_]+_qh)['\\\"]");
-        Matcher m=p.matcher(js); LinkedHashMap<String,String> nodes=new LinkedHashMap<>();
-        while(m.find()) nodes.putIfAbsent(m.group(2),m.group(1));
-        if(nodes.isEmpty()) throw new IOException("新浪品种目录解析失败");
-        List<Contract> result=new ArrayList<>();
-        for(var e:nodes.entrySet()) {
+    public static List<SignalCalculator.Contract> mainContracts() throws Exception {
+        String js = get("https://vip.stock.finance.sina.com.cn/quotes_service/view/js/qihuohangqing.js", Charset.forName("GBK"));
+        Pattern pattern = Pattern.compile("\\[\\s*['\\\"]([^'\\\"]{1,30})['\\\"]\\s*,\\s*['\\\"]([A-Za-z0-9_]+_qh)['\\\"]");
+        Matcher matcher = pattern.matcher(js);
+        LinkedHashMap<String, String> nodes = new LinkedHashMap<>();
+        while (matcher.find()) nodes.putIfAbsent(matcher.group(2), matcher.group(1));
+        if (nodes.isEmpty()) throw new IOException("新浪品种目录解析失败");
+
+        List<SignalCalculator.Contract> result = new ArrayList<>();
+        for (var entry : nodes.entrySet()) {
             try {
-                String u="https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQFuturesData?page=1&num=40&sort=position&asc=0&base=futures&node="+URLEncoder.encode(e.getKey(),"UTF-8");
-                JSONArray a=new JSONArray(get(u,Charset.forName("UTF-8")));
-                JSONObject best=null; double max=-1;
-                for(int i=0;i<a.length();i++) {
-                    JSONObject o=a.getJSONObject(i); String s=o.optString("symbol","").toUpperCase(Locale.ROOT);
-                    if(!s.matches("[A-Z]+[0-9]{3,4}") || s.endsWith("0")) continue;
-                    double pos=parse(o.optString("position","0"));
-                    if(pos>max){max=pos;best=o;}
+                String url = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQFuturesData?page=1&num=40&sort=position&asc=0&base=futures&node=" + URLEncoder.encode(entry.getKey(), "UTF-8");
+                JSONArray array = new JSONArray(get(url, Charset.forName("UTF-8")));
+                JSONObject best = null; double maximum = -1;
+                for (int i = 0; i < array.length(); i++) {
+                    JSONObject item = array.getJSONObject(i);
+                    String symbol = item.optString("symbol", "").toUpperCase(Locale.ROOT);
+                    if (!symbol.matches("[A-Z]+[0-9]{3,4}") || symbol.endsWith("0")) continue;
+                    double position = parse(item.optString("position", "0"));
+                    if (position > maximum) { maximum = position; best = item; }
                 }
-                if(best!=null) {
-                    String code=best.optString("symbol").toUpperCase(Locale.ROOT);
-                    String root=code.replaceAll("[0-9]+$","");
-                    String label=e.getValue()+code.substring(root.length());
-                    result.add(new Contract(code,label,root));
+                if (best != null) {
+                    String code = best.optString("symbol").toUpperCase(Locale.ROOT);
+                    String root = code.replaceAll("[0-9]+$", "");
+                    result.add(new SignalCalculator.Contract(code, entry.getValue() + code.substring(root.length()), root));
                 }
-            } catch(Exception ignored) {}
+            } catch (Exception ignored) {}
         }
-        result.sort(Comparator.comparing(Contract::root));
-        if(result.isEmpty()) throw new IOException("未取得实际主力合约（休盘时也应能读取，请稍后重试）");
+        result.sort(Comparator.comparing(SignalCalculator.Contract::root));
+        if (result.isEmpty()) throw new IOException("未取得实际主力合约，请稍后重试");
         return result;
     }
 
-    public static List<Bar> bars(String code) throws Exception {
-        String u="https://stock2.finance.sina.com.cn/futures/api/jsonp.php/=/InnerFuturesNewService.getFewMinLine?symbol="+URLEncoder.encode(code,"UTF-8")+"&type=60";
-        String raw=get(u,Charset.forName("UTF-8"));
-        int left=raw.indexOf("=("), right=raw.lastIndexOf(");");
-        if(left<0||right<0) throw new IOException("K线返回格式异常");
-        JSONArray a=new JSONArray(raw.substring(left+2,right)); List<Bar> out=new ArrayList<>();
-        DateTimeFormatter f=DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-        for(int i=0;i<a.length();i++) {
+    public static List<SignalCalculator.Bar> bars(String code) throws Exception {
+        String url = "https://stock2.finance.sina.com.cn/futures/api/jsonp.php/=/InnerFuturesNewService.getFewMinLine?symbol=" + URLEncoder.encode(code, "UTF-8") + "&type=60";
+        String raw = get(url, Charset.forName("UTF-8"));
+        int left = raw.indexOf("=("), right = raw.lastIndexOf(");");
+        if (left < 0 || right < 0) throw new IOException("K线返回格式异常");
+        JSONArray array = new JSONArray(raw.substring(left + 2, right));
+        List<SignalCalculator.Bar> result = new ArrayList<>();
+        DateTimeFormatter format = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+        for (int i = 0; i < array.length(); i++) {
             try {
-                Object item=a.get(i);
-                String timeText, closeText;
-                if(item instanceof JSONObject) {
-                    JSONObject x=(JSONObject)item;
-                    timeText=x.getString("d"); closeText=x.get("c").toString();
+                Object item = array.get(i);
+                String time, open, high, low, close, volume;
+                if (item instanceof JSONObject object) {
+                    time = object.getString("d"); open = object.get("o").toString();
+                    high = object.get("h").toString(); low = object.get("l").toString();
+                    close = object.get("c").toString(); volume = object.optString("v", "0");
                 } else {
-                    JSONArray x=(JSONArray)item;
-                    timeText=x.getString(0); closeText=x.get(4).toString();
+                    JSONArray row = (JSONArray) item;
+                    time = row.getString(0); open = row.get(1).toString(); high = row.get(2).toString();
+                    low = row.get(3).toString(); close = row.get(4).toString();
+                    volume = row.length() > 5 ? row.get(5).toString() : "0";
                 }
-                out.add(new Bar(LocalDateTime.parse(timeText,f),parse(closeText)));
-            } catch(Exception ignored) {}
+                result.add(new SignalCalculator.Bar(
+                    LocalDateTime.parse(time, format), parse(open), parse(high), parse(low),
+                    parse(close), parse(volume)
+                ));
+            } catch (Exception ignored) {}
         }
-        if(out.isEmpty()) throw new IOException("K线数据为空或字段无法识别");
-        out.sort(Comparator.comparing(Bar::time)); return out;
+        if (result.isEmpty()) throw new IOException("K线数据为空或字段无法识别");
+        result.sort(Comparator.comparing(SignalCalculator.Bar::time));
+        return result;
     }
 
-    public static Signal latestCross(List<Bar> b, Contract c, int n, boolean closedOnly) {
-        List<Bar> x=new ArrayList<>(b);
-        if(closedOnly&&!x.isEmpty()&&x.get(x.size()-1).time().isAfter(LocalDateTime.now().minusMinutes(60))) x.remove(x.size()-1);
-        List<Signal> all=crosses(x,c,n,0);
-        if(all.isEmpty())return null;
-        Signal latest=all.get(all.size()-1);
-        return tradingDay(latest.time()).equals(currentTradingDay())?latest:null;
+    private static double parse(String value) {
+        try { return Double.parseDouble(value); } catch (Exception ignored) { return 0; }
     }
-
-    public static List<Signal> replay(List<Bar> b, Contract c, int n, int days) { return crosses(b,c,n,days); }
-
-    private static List<Signal> crosses(List<Bar> b, Contract c, int n, int days) {
-        List<Signal> out=new ArrayList<>(); if(b.size()<n+1)return out;
-        Set<LocalDate> allowed=new HashSet<>();
-        if(days>0){LinkedHashSet<LocalDate>d=new LinkedHashSet<>();for(Bar z:b)d.add(z.time().plusHours(4).toLocalDate());List<LocalDate>l=new ArrayList<>(d);allowed.addAll(l.subList(Math.max(0,l.size()-days),l.size()));}
-        double sum=0; double[] ma=new double[b.size()]; Arrays.fill(ma,Double.NaN);
-        for(int i=0;i<b.size();i++){sum+=b.get(i).close();if(i>=n)sum-=b.get(i-n).close();if(i>=n-1)ma[i]=sum/n;}
-        for(int i=n;i<b.size();i++){
-            if(days>0&&!allowed.contains(b.get(i).time().plusHours(4).toLocalDate()))continue;
-            double prev=b.get(i-1).close()-ma[i-1], cur=b.get(i).close()-ma[i]; String dir=null;
-            if(prev<=0&&cur>0)dir="上穿"; else if(prev>=0&&cur<0)dir="下穿";
-            if(dir!=null)out.add(new Signal(c.code(),c.name(),b.get(i).time(),dir,b.get(i).close(),ma[i]));
-        } return out;
-    }
-    // Chinese futures night sessions after 20:00 belong to the next trading day.
-    private static LocalDate tradingDay(LocalDateTime t){
-        LocalDate d=t.toLocalDate();
-        if(t.getHour()>=20)d=d.plusDays(1);
-        while(d.getDayOfWeek()==DayOfWeek.SATURDAY||d.getDayOfWeek()==DayOfWeek.SUNDAY)d=d.plusDays(1);
-        return d;
-    }
-    private static LocalDate currentTradingDay(){return tradingDay(LocalDateTime.now());}
-    private static double parse(String s){try{return Double.parseDouble(s);}catch(Exception e){return 0;}}
 }

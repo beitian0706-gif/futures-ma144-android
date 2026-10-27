@@ -1,0 +1,12 @@
+已完成的源码级检查：
+
+- SignalCalculator.java 使用JDK 17编译通过。
+- MarketClient.java 使用JSON接口桩编译通过。
+- 自动测试 SignalCalculatorTest 通过。
+- 验证收线时间后15秒才确认，提前5秒不会提醒。
+- 验证首次启动只检查最新已完成K线，不回放整段历史。
+- 验证新K线收盘上穿和下穿均能生成提醒。
+- 验证“立即扫描”限定当前交易日。
+- 清理了旧版 latestCross、closedOnly 和按60分钟删除末根K线的逻辑引用。
+
+当前执行环境没有Android SDK和Gradle命令，因此未在此处生成或真机安装APK。源码包已包含GitHub Actions自动构建文件；上传到GitHub后运行 Build Android APK 即可生成APK。生成后仍需在Android 13及以上真机确认通知权限、后台运行和电池优化设置。
